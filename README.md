@@ -1,179 +1,54 @@
-# Fine-Tuning BERT for Sentiment Analysis
+# BERT Fine-Tuning for Emotion Classification
 
-## Description
-This repository contains code for fine-tuning a BERT (Bidirectional Encoder Representations from Transformers) model for sentiment analysis using the Huggingface transformers library.
+Fine-tunes `bert-base-uncased` on the [`dair-ai/emotion`](https://huggingface.co/datasets/dair-ai/emotion) dataset to classify English text into six emotions: sadness, joy, love, anger, fear and surprise. The notebook compares the fine-tuned model against four baselines on the same test set.
 
-## Table of Contents
-- [Installation](#installation)
-- [Usage](#usage)
-- [Training and Evaluation](#training-and-evaluation)
-- [Inference](#inference)
-- [Contributing](#contributing)
-- [License](#license)
-- [Contact Information](#contact-information)
+## Results
 
-## Installation
+Test set: 2,000 examples. Fine-tuning results are mean ± std over three seeds (42, 43, 44).
 
-1. Clone the repository:
-   ```sh
-   git clone https://github.com/aayush1693/Fine-Tuning-BERT-for-Sentiment-Analysis.git
-   ```
+| Model | Accuracy | Macro-F1 |
+|---|---|---|
+| Majority class | 0.347 | 0.086 |
+| Zero-shot NLI (`bart-large-mnli`) | 0.466 | 0.433 |
+| Frozen BERT + linear probe | 0.590 | 0.530 |
+| TF-IDF + logistic regression | 0.882 | 0.837 |
+| **BERT fine-tuned (3 seeds)** | **0.927 ± 0.003** | **0.884 ± 0.006** |
 
-2. Navigate to the project directory:
-   ```sh
-   cd Fine-Tuning-BERT-for-Sentiment-Analysis
-   ```
+- Fine-tuned BERT beats the strongest baseline (TF-IDF + logistic regression) by about 5 points of macro-F1. A paired bootstrap gives a 95% CI of +0.027 to +0.077 for the gain, and an exact McNemar test gives p ≈ 4e-11 (155 examples only BERT got right vs. 59 only the baseline got right). Both results are for seed 42.
+- Frozen BERT features with a linear probe perform poorly. Most of the benefit comes from fine-tuning, not from the pre-trained representation alone.
+- Per-class F1 (seed 42): sadness 0.96, joy 0.95, anger 0.92, fear 0.90, love 0.84, surprise 0.75. Surprise is the weakest class, with only 66 test examples.
 
-3. Install the required dependencies:
-   ```sh
-   pip install transformers datasets matplotlib pandas scikit-learn
-   ```
+## Method
+
+- **Data:** the standard train/validation/test split (16,000 / 2,000 / 2,000). The label distribution is skewed toward joy and sadness, so macro-F1 is reported alongside accuracy.
+- **Model:** `bert-base-uncased` with a sequence-classification head. Max sequence length 128.
+- **Training:** 3 epochs, learning rate 2e-5, batch size 32, weight decay 0.01, 6% warm-up, FP16 on GPU.
+- **Model selection:** the checkpoint with the best validation macro-F1 is kept. The test set is used only once per seed, after training.
+- **Efficiency:** 109M parameters (418 MB in FP32). About 13 ms per example at batch size 1 and about 565 examples/s at batch size 32 on a Tesla T4.
+
+## Requirements
+
+- A GPU runtime (developed on a Colab T4; the notebook falls back to CPU but training will be slow)
+- Python packages: `transformers`, `datasets`, `accelerate`, `scikit-learn`, `matplotlib`, `seaborn`, `pandas`, `scipy`
+- Optional: a Hugging Face token in the `HF_TOKEN` environment variable or Colab secrets. Needed for the zero-shot baseline download.
 
 ## Usage
 
-1. Prepare your dataset and ensure it is in the required format. This project uses the SST-2 dataset from Huggingface.
+Open `bert_emotion_classification.ipynb` in Google Colab with a GPU runtime and run all cells. The notebook downloads the dataset and models automatically and writes results to `/content/bert_out/`:
 
-2. Run the training script. Replace `<path_to_data>` and `<path_to_output>` with your actual data and output directories:
-   ```sh
-   python fine_tune_bert_sentiment.py --data_dir <path_to_data> --output_dir <path_to_output>
-   ```
+- `leaderboard.csv`
+- `efficiency.json`
+- `data_overview.png`
+- `validation_curves.png`
+- `comparison.png`
+- `confusion_matrix.png`
+- the best seed-42 model
 
-3. Evaluate the model. Replace `<path_to_model>` with your actual model directory:
-   ```sh
-   python evaluate.py --model_dir <path_to_model>
-   ```
+The zero-shot baseline downloads `facebook/bart-large-mnli` (about 1.6 GB). Set `RUN_ZEROSHOT = False` in the configuration cell to skip it.
 
-## Training and Evaluation
+## Limitations
 
-The project includes a Jupyter notebook (`fine_tune_bert_sentiment.ipynb`) that demonstrates the entire process of fine-tuning a BERT model for sentiment analysis. Below are the key steps:
-
-1. **Install Dependencies**:
-   ```python
-   !pip install transformers datasets matplotlib
-   ```
-
-2. **Load and Prepare Dataset**:
-   ```python
-   from datasets import load_dataset
-   dataset = load_dataset('glue', 'sst2')
-   train_data = dataset['train']
-   test_data = dataset['validation']
-   ```
-
-3. **Tokenize Data**:
-   ```python
-   from transformers import BertTokenizer
-   tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
-   def tokenize(batch):
-       return tokenizer(batch['sentence'], padding=True, truncation=True)
-   train_data = train_data.map(tokenize, batched=True, batch_size=len(train_data))
-   test_data = test_data.map(tokenize, batched=True, batch_size=len(test_data))
-   ```
-
-4. **Load Pre-trained BERT Model**:
-   ```python
-   from transformers import BertForSequenceClassification
-   model = BertForSequenceClassification.from_pretrained('bert-base-uncased', num_labels=2)
-   ```
-
-5. **Define Metrics and Evaluation Function**:
-   ```python
-   from sklearn.metrics import accuracy_score, precision_recall_fscore_support
-   def compute_metrics(pred):
-       labels = pred.label_ids
-       preds = pred.predictions.argmax(-1)
-       precision, recall, f1, _ = precision_recall_fscore_support(labels, preds, average='binary')
-       acc = accuracy_score(labels, preds)
-       return {
-           'accuracy': acc,
-           'f1': f1,
-           'precision': precision,
-           'recall': recall
-       }
-   ```
-
-6. **Setup Training Arguments**:
-   ```python
-   from transformers import TrainingArguments
-   training_args = TrainingArguments(
-       output_dir='./results',          
-       evaluation_strategy="epoch",     
-       num_train_epochs=3,              
-       per_device_train_batch_size=16,  
-       per_device_eval_batch_size=64,   
-       warmup_steps=500,                
-       weight_decay=0.01,               
-       logging_dir='./logs',            
-       logging_steps=10,                
-       load_best_model_at_end=True,     
-       save_strategy="epoch",           
-   )
-   ```
-
-7. **Initialize Trainer**:
-   ```python
-   from transformers import Trainer
-   trainer = Trainer(
-       model=model,                         
-       args=training_args,                  
-       train_dataset=train_data,            
-       eval_dataset=test_data,              
-       compute_metrics=compute_metrics,     
-   )
-   ```
-
-8. **Train the Model and Visualize Training Loss**:
-   ```python
-   train_result = trainer.train()
-   model.save_pretrained('./fine_tuned_bert')
-   tokenizer.save_pretrained('./fine_tuned_bert')
-   ```
-
-9. **Evaluate the Model**:
-   ```python
-   eval_result = trainer.evaluate()
-   for key, value in eval_result.items():
-       print(f"{key}: {value:.4f}")
-   ```
-
-10. **Visualize Training and Evaluation Metrics**:
-    ```python
-    metrics = eval_result
-    metric_names = ['accuracy', 'precision', 'recall', 'f1']
-    metric_values = [metrics['eval_accuracy'], metrics['eval_precision'], metrics['eval_recall'], metrics['eval_f1']]
-    plt.bar(metric_names, metric_values, color=['blue', 'orange', 'green', 'red'])
-    plt.title('Evaluation Metrics')
-    plt.ylim(0, 1)
-    plt.show()
-    ```
-
-## Inference
-
-You can perform inference on new sentences using the fine-tuned model:
-
-```python
-from transformers import BertTokenizer, BertForSequenceClassification
-import torch
-
-fine_tuned_model = BertForSequenceClassification.from_pretrained('./fine_tuned_bert')
-fine_tuned_tokenizer = BertTokenizer.from_pretrained('./fine_tuned_bert')
-
-sentence = "This movie is fantastic!"
-inputs = fine_tuned_tokenizer(sentence, return_tensors="pt")
-outputs = fine_tuned_model(**inputs)
-prediction = torch.argmax(outputs.logits, dim=-1)
-label = 'positive' if prediction == 1 else 'negative'
-print(f"Sentiment: {label}")
-```
-
-## Contributing
-
-Contributions are welcome! Please fork the repository and submit a pull request.
-
-## License
-
-This project is licensed under the MIT License. See the `LICENSE` file for details.
-
-## Contact Information
-
-For any inquiries or issues, please contact [aayush1693](https://github.com/aayush1693).
+- Results come from one train/validation/test split and three seeds.
+- No hyperparameter search was done. The configuration is a standard BERT fine-tuning recipe.
+- The dataset labels were assigned using hashtags, so some errors reflect label noise. Many of the most confident mistakes involve mixed or ambiguous emotions.
+- Results apply to this dataset and may not transfer to other domains such as social media or longer documents.
